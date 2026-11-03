@@ -1,0 +1,247 @@
+name: Immich - Mirror main and publish Docker images
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Build and publish the mirrored upstream commit even if unchanged'
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches:
+      - 'backport-31380-to-release/v3.3'
+    paths:
+      - '.github/workflows/auto-upstream-images.yml'
+      - '.github/IMMICH_MIRROR_BUILD.md'
+
+permissions:
+  contents: write
+
+# Immich Docker builds are expensive; never cancel an ongoing build when a
+# newer upstream commit arrives. GitHub coalesces excess pending runs.
+concurrency:
+  group: immich-official-main-mirror-and-publish
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Fast-forward GitHub main from official upstream
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.mirror.outputs.changed }}
+      source_sha: ${{ steps.mirror.outputs.source_sha }}
+      short_sha: ${{ steps.mirror.outputs.short_sha }}
+      mirror_sha: ${{ steps.mirror.outputs.mirror_sha }}
+    steps:
+      - name: Check out mirror main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Compare upstream and fast-forward main safely
+        id: mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add official https://github.com/immich-app/immich.git
+          git -c http.version=HTTP/1.1 fetch --no-tags official refs/heads/main
+          source_sha="$(git rev-parse FETCH_HEAD)"
+          old_sha="$(git rev-parse HEAD)"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${source_sha:0:12}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$old_sha" == "$source_sha" ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "mirror_sha=$old_sha" >> "$GITHUB_OUTPUT"
+            echo "Official upstream is unchanged: $source_sha"
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "$old_sha" "$source_sha"; then
+            echo "::error::Mirror main has diverged from official main; refusing to overwrite it."
+            exit 1
+          fi
+          git merge --ff-only FETCH_HEAD
+          git push origin HEAD:main
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          echo "mirror_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Fast-forwarded main from $old_sha to $source_sha"
+
+  build:
+    name: Build and push ${{ matrix.image }} (Linux AMD64)
+    needs: sync
+    if: needs.sync.outputs.changed == 'true' || github.event_name == 'push' || inputs.force_build == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: immich-server
+            context: .
+            dockerfile: server/Dockerfile
+          - image: immich-machine-learning
+            context: machine-learning
+            dockerfile: machine-learning/Dockerfile
+    steps:
+      - name: Check out the exact mirrored upstream revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.mirror_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Reclaim unused preinstalled toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build official Dockerfile and publish revisioned image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./source/${{ matrix.context }}
+          file: ./source/${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:sha-${{ needs.sync.outputs.short_sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}
+          build-args: |
+            DEVICE=cpu
+            BUILD_ID=${{ github.run_id }}
+            BUILD_IMAGE=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+            BUILD_SOURCE_REF=main
+            BUILD_SOURCE_COMMIT=${{ needs.sync.outputs.source_sha }}
+
+  release:
+    name: Publish matching Docker Compose GitHub pre-release
+    needs: [sync, build]
+    if: needs.build.result == 'success' && (needs.sync.outputs.changed == 'true' || github.event_name == 'push' || inputs.force_build == true)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+      SHORT_SHA: ${{ needs.sync.outputs.short_sha }}
+      MIRROR_SHA: ${{ needs.sync.outputs.mirror_sha }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Check out matching source for deployment files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.mirror_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Configure Buildx for registry manifest verification
+        uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify that both Docker images were published
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "ghcr.io/${OWNER}/immich-server:sha-${SHORT_SHA}"
+          docker buildx imagetools inspect "ghcr.io/${OWNER}/immich-machine-learning:sha-${SHORT_SHA}"
+
+      - name: Package source-matched Compose deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp source/docker/docker-compose.yml dist/docker-compose.yml
+          cp source/docker/example.env dist/example.env
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          compose = Path("dist/docker-compose.yml")
+          text = compose.read_text(encoding="utf-8")
+          image_map = {
+              "ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}":
+                  f"ghcr.io/{os.environ['OWNER']}/immich-server:sha-{os.environ['SHORT_SHA']}",
+              "ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}":
+                  f"ghcr.io/{os.environ['OWNER']}/immich-machine-learning:sha-{os.environ['SHORT_SHA']}",
+          }
+          for original, replacement in image_map.items():
+              if text.count(original) != 1:
+                  raise RuntimeError(f"Unexpected upstream Compose image declaration: {original}")
+              text = text.replace(original, replacement)
+          compose.write_text(text, encoding="utf-8")
+          PY
+          cat > dist/SOURCE.txt <<EOF
+          UNOFFICIAL DEVELOPMENT BUILD OF IMMICH
+          Official upstream: https://github.com/immich-app/immich
+          Official upstream main SHA: ${SOURCE_SHA}
+          Mirrored GitHub main SHA: ${MIRROR_SHA}
+          Architecture: linux/amd64
+          Machine-learning device: CPU
+          Server: ghcr.io/${OWNER}/immich-server:sha-${SHORT_SHA}
+          Machine learning: ghcr.io/${OWNER}/immich-machine-learning:sha-${SHORT_SHA}
+
+          These are main branch development builds, not official stable releases.
+          Ensure packages are public if using them without registry authentication.
+          Consult the upstream upgrade notes and back up your library and database.
+          EOF
+          (cd dist && sha256sum docker-compose.yml example.env SOURCE.txt > SHA256SUMS.txt)
+
+      - name: Create a GitHub pre-release for this upstream SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="immich-main-${SHORT_SHA}"
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Unofficial automated builds tracking [Immich upstream main](https://github.com/immich-app/immich).
+          This is a development snapshot, **not** an official stable release.
+
+          Source SHA: ${SOURCE_SHA}
+          Mirror SHA: ${MIRROR_SHA}
+          Platform: Linux AMD64, default CPU machine learning.
+
+          - Server: \`ghcr.io/${OWNER}/immich-server:sha-${SHORT_SHA}\`
+          - Machine learning: \`ghcr.io/${OWNER}/immich-machine-learning:sha-${SHORT_SHA}\`
+          - Download the matching \`docker-compose.yml\` and configure \`.env\` from \`example.env\`.
+          - Keep the PostgreSQL/Valkey image tags from this matching upstream Compose file.
+          - GHCR package visibility may need to be set to public separately.
+          - Back up media and database before any upgrade. Development snapshots may require migrations.
+          EOF
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$MIRROR_SHA" \
+              --prerelease \
+              --title "Immich main ${SHORT_SHA} (unofficial Docker build)" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
