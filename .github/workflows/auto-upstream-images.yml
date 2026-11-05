@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: true
 
-      - name: Compare upstream and fast-forward main safely
+      - name: Mirror official main source without editing protected workflows
         id: mirror
         shell: bash
         run: |
@@ -51,33 +51,56 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add official https://github.com/immich-app/immich.git
-          git -c http.version=HTTP/1.1 fetch --no-tags --depth=128 official refs/heads/main
+          # Only the source snapshot is needed; there is no need to fetch history.
+          git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 official refs/heads/main
           source_sha="$(git rev-parse FETCH_HEAD)"
           old_sha="$(git rev-parse HEAD)"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "short_sha=${source_sha:0:12}" >> "$GITHUB_OUTPUT"
 
-          if [[ "$old_sha" == "$source_sha" ]]; then
+          # A source revision marker prevents ten-minute scheduled runs from
+          # endlessly rebuilding the same upstream source commit.
+          marker='.github/IMMICH_MAIN_UPSTREAM_SHA'
+          if [[ -f "$marker" ]] && [[ "$(tr -d '\r\n' < "$marker")" == "$source_sha" ]]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             echo "mirror_sha=$old_sha" >> "$GITHUB_OUTPUT"
-            echo "Official upstream is unchanged: $source_sha"
+            echo "Official source revision already mirrored: $source_sha"
             exit 0
           fi
 
-          # A shallow fetch normally contains the recent changes. Deepen only
-          # for long gaps; do not fetch every branch/history every ten minutes.
-          if ! git merge-base --is-ancestor "$old_sha" "$source_sha"; then
-            git -c http.version=HTTP/1.1 fetch --no-tags --unshallow official refs/heads/main
-          fi
-          if ! git merge-base --is-ancestor "$old_sha" "$source_sha"; then
-            echo "::error::Mirror main has diverged from official main; refusing to overwrite it."
+          # Build a single source-snapshot commit on top of our main branch.
+          # It intentionally does not include upstream Git history, so an
+          # ordinary contents:write GITHUB_TOKEN never pushes new upstream
+          # .github/workflows commits (which require a Workflows write grant).
+          git read-tree FETCH_HEAD
+          # Keep all workflow definitions EXACTLY as they were on mirror main,
+          # including deletions of any workflows newly introduced upstream.
+          git restore --source=HEAD --staged -- .github/workflows
+          mkdir -p .github
+          printf '%s\n' "$source_sha" > "$marker"
+          git add -- "$marker"
+
+          # Refuse to publish if workflow files somehow changed. This checks
+          # the resulting tree, not just the explicit checkout commands.
+          if ! git diff --cached --quiet HEAD -- .github/workflows; then
+            echo '::error::Refusing to push modified workflow files.'
             exit 1
           fi
-          git merge --ff-only FETCH_HEAD
-          git push origin HEAD:main
+          if ! git diff --cached --quiet FETCH_HEAD -- . \
+                ':(exclude).github/workflows' \
+                ':(exclude).github/IMMICH_MAIN_UPSTREAM_SHA'; then
+            echo '::error::Mirrored source differs from official main.'
+            exit 1
+          fi
+
+          tree_sha="$(git write-tree)"
+          mirror_sha="$(printf 'mirror: official Immich main %s (preserve workflows)\n' "$source_sha" \
+            | git commit-tree "$tree_sha" -p "$old_sha")"
+          git push origin "$mirror_sha:refs/heads/main"
+
           echo 'changed=true' >> "$GITHUB_OUTPUT"
-          echo "mirror_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "Fast-forwarded main from $old_sha to $source_sha"
+          echo "mirror_sha=$mirror_sha" >> "$GITHUB_OUTPUT"
+          echo "Mirrored upstream source $source_sha as $mirror_sha"
 
   build:
     name: Build and push ${{ matrix.image }} (Linux AMD64)
