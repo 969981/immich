@@ -40,11 +40,25 @@ export const createApp = () => {
     },
     album: {
       descriptionInput: page.getByTestId('autogrow-textarea'),
-      commentsButton: (count: number) => button(String(count)),
+      commentsButton: button('activity'),
+      likeButton: page.getByRole('button', { name: 'like', exact: true, pressed: false }),
+      likedButton: page.getByRole('button', { name: 'like', exact: true, pressed: true }),
       activity: {
+        commentInput: page.getByPlaceholder('say_something'),
+        sendButton: button('send_message'),
         commentMenu: (index: number) => button('comment_options').nth(index),
         removeMenuItem: page.getByRole('menuitem', { name: 'remove', exact: true }),
       },
+    },
+    confirmButton: page.getByRole('dialog').getByRole('button', { name: 'confirm', exact: true }),
+    duplicates: {
+      keepToggle: (index: number) => button('keep').nth(index),
+      stackButton: button('stack'),
+      trashButton: button('trash_count'),
+      deduplicateAllButton: button('deduplicate_all'),
+      keepAllButton: button('keep_all').first(),
+      groupPosition: (current: number, total: number) => page.getByText(`${current} / ${total}`),
+      emptyMessage: page.getByText('no_duplicates_found'),
     },
     trash: {
       emptyTrashButton: button('empty_trash'),

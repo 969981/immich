@@ -59,6 +59,9 @@ export const createApp = (page: Page, data: MockData) => {
       mapButton: labelled('map'),
       mapDialog: page.getByRole('dialog'),
       mapMarkers: page.getByRole('dialog').locator('.maplibregl-marker'),
+      activity: {
+        commentsButton: page.getByRole('button', { name: 'activity', exact: true }),
+      },
     },
 
     memories: {
@@ -178,6 +181,16 @@ const createTimeline = (page: Page, data: MockData) => {
         await page.getByRole('menuitem', { name: 'change_date', exact: true }).click();
       },
 
+      stack: async () => {
+        await page.getByLabel('menu', { exact: true }).click();
+        await page.getByRole('menuitem', { name: 'stack', exact: true }).click();
+      },
+
+      unstack: async () => {
+        await page.getByLabel('menu', { exact: true }).click();
+        await page.getByRole('menuitem', { name: 'unstack', exact: true }).click();
+      },
+
       removeFromAlbum: async () => {
         await page.getByLabel('menu', { exact: true }).click();
         await page.getByRole('menuitem', { name: 'remove_from_album', exact: true }).click();
@@ -198,6 +211,7 @@ const createTimeline = (page: Page, data: MockData) => {
     thumbhash: (asset: Asset) => thumbnail(asset).getByTestId('thumbhash'),
     brokenImage: (asset: Asset) => thumbnail(asset).getByText('error_loading_image', { exact: true }),
     archiveIcon: (asset: Asset) => thumbnail(asset).getByTestId('archive-icon'),
+    stackIcon: (asset: Asset) => thumbnail(asset).getByTestId('stack-icon'),
     scrubber: (yearMonth: string) => page.locator(`[data-segment-year-month="${yearMonth}"]`),
 
     select: async (asset: Asset) => {
@@ -322,12 +336,22 @@ const createViewer = (page: Page) => {
 
     faceEditor: createFaceEditor(page),
 
+    activity: {
+      likeButton: root.getByRole('button', { name: 'like', exact: true, pressed: false }),
+      likedButton: root.getByRole('button', { name: 'like', exact: true, pressed: true }),
+      commentsButton: root.getByRole('button', { name: 'activity', exact: true }),
+      commentInput: page.getByPlaceholder('say_something'),
+    },
+
     waitForAsset: (asset: Asset) => expect(media(asset)).toBeVisible(),
 
     openSlideshow: () => moreMenuItem('slideshow'),
     download: () => moreMenuItem('download'),
     archive: () => moreMenuItem('to_archive'),
     unarchive: () => moreMenuItem('unarchive'),
+    unstack: () => moreMenuItem('unstack'),
+    setStackPrimary: () => moreMenuItem('set_stack_primary_asset'),
+    removeFromStack: () => moreMenuItem('viewer_remove_from_stack'),
 
     permanentlyDelete: async () => {
       await page.getByLabel('permanently_delete', { exact: true }).click();

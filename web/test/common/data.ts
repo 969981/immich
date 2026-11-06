@@ -6,7 +6,9 @@ import {
   AssetOrder,
   AssetTypeEnum,
   AssetVisibility,
+  ReactionLevel,
   ReactionType,
+  type ActivityCreateDto,
   type ActivityResponseDto,
   type AdminConfigDto,
   type AlbumResponseDto,
@@ -15,6 +17,7 @@ import {
   type AssetResponseDto,
   type CreateAlbumDto,
   type DownloadInfoDto,
+  type DuplicateResolveDto,
   type DuplicateResponseDto,
   type MapMarkerResponseDto,
   type MemoryResponseDto,
@@ -24,7 +27,9 @@ import {
   type PluginMethodResponseDto,
   type SearchResponseDto,
   type SharedLinkResponseDto,
+  type StackCreateDto,
   type StackResponseDto,
+  type StackUpdateDto,
   type TagResponseDto,
   type TimeBucketAssetResponseDto,
   type TimeBucketsResponseDto,
@@ -46,6 +51,14 @@ export type TimelineFilter = {
   isTrashed?: boolean;
   visibility?: AssetVisibility;
   order?: AssetOrder;
+  withStacked?: boolean;
+};
+
+export type ActivityFilter = {
+  assetId?: string;
+  userId?: string;
+  $type?: ReactionType;
+  level?: ReactionLevel;
 };
 
 export type MemoryFilter = {
@@ -182,7 +195,8 @@ export class MockData {
             ? !hiddenVisibilities.has(asset.visibility)
             : asset.visibility === filter.visibility) &&
           asset.isTrashed === isTrashed &&
-          (filter.isFavorite === undefined || asset.isFavorite === filter.isFavorite),
+          (filter.isFavorite === undefined || asset.isFavorite === filter.isFavorite) &&
+          (!filter.withStacked || !asset.stack || asset.stack.primaryAssetId === asset.id),
       )
       .sort((a, b) => direction * a.fileCreatedAt.localeCompare(b.fileCreatedAt));
   }
@@ -352,6 +366,23 @@ export class MockData {
     return [...groups].map(([duplicateId, assets]) => ({ duplicateId, assets, suggestedKeepAssetIds: [assets[0].id] }));
   }
 
+  resolveDuplicates({ groups }: DuplicateResolveDto) {
+    for (const { duplicateId, trashAssetIds } of groups) {
+      this.deleteDuplicates([duplicateId]);
+      this.deleteAssets(trashAssetIds);
+    }
+    return groups.map(({ duplicateId }) => ({ id: duplicateId, success: true }));
+  }
+
+  deleteDuplicates(duplicateIds: string[]) {
+    const ids = new Set(duplicateIds);
+    const duplicates = [...this.assets.values()].filter(({ duplicateId }) => duplicateId && ids.has(duplicateId));
+    for (const asset of duplicates) {
+      this.assets.set(asset.id, { ...asset, duplicateId: null });
+    }
+    return this;
+  }
+
   removeFromAlbum(albumId: string, assetIds: string[]) {
     const members = this.albumAssets.get(albumId);
     return assetIds.map((id) => ({ id, success: members?.delete(id) ?? false }));
@@ -397,6 +428,12 @@ export class MockData {
     return this;
   }
 
+  createActivity({ assetId, type, comment }: ActivityCreateDto) {
+    const activity = factory.activity({ user: this.user, assetId: assetId ?? null, type, comment: comment ?? null });
+    this.addActivities(activity);
+    return activity;
+  }
+
   activityStatistics(filter: { assetId?: string } = {}) {
     const activities = this.activityList(filter);
     return {
@@ -405,8 +442,16 @@ export class MockData {
     };
   }
 
-  activityList({ assetId }: { assetId?: string } = {}) {
-    return [...this.activities.values()].filter((activity) => !assetId || activity.assetId === assetId);
+  activityList({ assetId, userId, $type, level }: ActivityFilter = {}) {
+    return [...this.activities.values()].filter(
+      (activity) =>
+        (!assetId || activity.assetId === assetId) &&
+        (!userId || activity.user.id === userId) &&
+        (!$type || activity.type === $type) &&
+        (level !== ReactionLevel.Album || activity.assetId === null) &&
+        (level !== ReactionLevel.Asset || activity.assetId !== null) &&
+        (activity.assetId === null || this.assets.get(activity.assetId)?.isTrashed === false),
+    );
   }
 
   deleteActivity(id: string) {
@@ -471,6 +516,43 @@ export class MockData {
         asset.stack = { id: stack.id, assetCount: stack.assets.length, primaryAssetId: stack.primaryAssetId };
         this.assets.set(asset.id, asset);
       }
+    }
+    return this;
+  }
+
+  createStack({ assetIds }: StackCreateDto) {
+    const stack = factory.stack({ assets: assetIds.map((id) => this.assets.get(id)!) });
+    this.addStacks(stack);
+    return stack;
+  }
+
+  updateStack(id: string, { primaryAssetId }: StackUpdateDto) {
+    const stack = this.stacks.get(id);
+    if (!stack) {
+      return;
+    }
+    const updated = { ...stack, primaryAssetId: primaryAssetId ?? stack.primaryAssetId };
+    this.stacks.set(id, updated);
+    return updated;
+  }
+
+  removeFromStack(id: string, assetId: string) {
+    const stack = this.stacks.get(id);
+    const asset = this.assets.get(assetId);
+    if (!stack || !asset) {
+      return;
+    }
+    this.assets.set(assetId, { ...asset, stack: null });
+    this.addStacks({ ...stack, assets: stack.assets.filter((asset) => asset.id !== assetId) });
+    return this;
+  }
+
+  deleteStacks(ids: string[]) {
+    for (const id of ids) {
+      for (const asset of this.stacks.get(id)?.assets ?? []) {
+        this.assets.set(asset.id, { ...asset, stack: null });
+      }
+      this.stacks.delete(id);
     }
     return this;
   }
