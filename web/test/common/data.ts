@@ -6,6 +6,7 @@ import {
   AssetOrder,
   AssetTypeEnum,
   AssetVisibility,
+  QueueCommand,
   ReactionLevel,
   ReactionType,
   type ActivityCreateDto,
@@ -25,6 +26,11 @@ import {
   type MetadataSearchDto,
   type PersonResponseDto,
   type PluginMethodResponseDto,
+  type QueueCommandDto,
+  type QueueDeleteDto,
+  type QueueName,
+  type QueueResponseDto,
+  type QueueUpdateDto,
   type SearchResponseDto,
   type SharedLinkResponseDto,
   type StackCreateDto,
@@ -112,6 +118,7 @@ export class MockData {
   private readonly activities = new Map<string, ActivityResponseDto>();
   private readonly workflows = new Map<string, WorkflowResponseDto>();
   private readonly pluginMethods = new Map<string, PluginMethodResponseDto>();
+  private readonly queueStates = new Map<QueueName, QueueResponseDto>();
 
   getPreferences() {
     return this.preferences;
@@ -385,6 +392,10 @@ export class MockData {
 
   removeFromAlbum(albumId: string, assetIds: string[]) {
     const members = this.albumAssets.get(albumId);
+    const removed = [...this.activities.values()].filter(({ assetId }) => assetId && assetIds.includes(assetId));
+    for (const { id } of removed) {
+      this.activities.delete(id);
+    }
     return assetIds.map((id) => ({ id, success: members?.delete(id) ?? false }));
   }
 
@@ -500,6 +511,64 @@ export class MockData {
   updateAdminConfig(config: AdminConfigDto) {
     this.adminConfig = config;
     return config;
+  }
+
+  addQueues(queues: MaybeArray<QueueResponseDto>) {
+    for (const queue of toList(queues)) {
+      this.queueStates.set(queue.name, queue);
+    }
+    return this;
+  }
+
+  queueList() {
+    return [...this.queueStates.values()];
+  }
+
+  getQueue(name: QueueName) {
+    return this.queueStates.get(name);
+  }
+
+  updateQueue(name: QueueName, { isPaused }: QueueUpdateDto) {
+    const queue = this.queueStates.get(name);
+    if (queue && isPaused !== undefined) {
+      queue.isPaused = isPaused;
+    }
+    return queue;
+  }
+
+  emptyQueue(name: QueueName, { failed = false }: QueueDeleteDto) {
+    const queue = this.queueStates.get(name);
+    if (queue) {
+      queue.statistics.waiting = 0;
+      queue.statistics.delayed = 0;
+      queue.statistics.paused = 0;
+      if (failed) {
+        queue.statistics.failed = 0;
+      }
+    }
+    return queue;
+  }
+
+  runQueueCommand(name: QueueName, { command }: QueueCommandDto) {
+    switch (command) {
+      case QueueCommand.Pause:
+      case QueueCommand.Resume: {
+        return this.updateQueue(name, { isPaused: command === QueueCommand.Pause });
+      }
+      case QueueCommand.Empty: {
+        return this.emptyQueue(name, { failed: false });
+      }
+      case QueueCommand.ClearFailed: {
+        const queue = this.queueStates.get(name);
+        if (queue) {
+          queue.statistics.failed = 0;
+        }
+        return queue;
+      }
+      case QueueCommand.Start: {
+        return this.queueStates.get(name);
+      }
+    }
   }
 
   addPeople(people: MaybeArray<PersonResponseDto>) {
