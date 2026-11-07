@@ -40,9 +40,36 @@ export const createHandlers = (data: MockData): Handlers => {
     },
     getUserStatisticsAdmin: () => ({ json: { images: 0, videos: 0, total: 0 } }),
     getUserSessionsAdmin: () => ({ json: [] }),
-    getApiKeys: () => ({ json: [] }),
-    getSessions: () => ({ json: [] }),
-    searchPasskeys: () => ({ json: [] }),
+    getAllLibraries: () => ({ json: data.libraryList() }),
+    getLibrary: ({ params }) => {
+      const library = data.getLibrary(params.id);
+      return library ? { json: library } : notFound;
+    },
+    getLibraryStatistics: ({ params }) => {
+      const library = data.getLibrary(params.id);
+      return library
+        ? { json: { photos: library.assetCount, videos: 0, total: library.assetCount, usage: 0 } }
+        : notFound;
+    },
+    updateLibrary: ({ params, body }) => {
+      const library = data.updateLibrary(params.id, body);
+      return library ? { json: library } : notFound;
+    },
+    deleteLibrary: ({ params }) => (data.deleteLibrary(params.id) ? { status: 204 } : notFound),
+    getApiKeys: () => ({ json: data.apiKeyList() }),
+    rotateApiKey: ({ params }) => {
+      const rotated = data.rotateApiKey(params.id);
+      return rotated ? { status: 201, json: rotated } : notFound;
+    },
+    deleteApiKey: ({ params }) => (data.deleteApiKey(params.id) ? { status: 204 } : notFound),
+    getSessions: () => ({ json: data.sessionList() }),
+    deleteSession: ({ params }) => (data.deleteSession(params.id) ? { status: 204 } : notFound),
+    deleteAllSessions: () => {
+      data.deleteOtherSessions();
+      return { status: 204 };
+    },
+    searchPasskeys: () => ({ json: data.passkeyList() }),
+    deletePasskey: ({ params }) => (data.deletePasskey(params.id) ? { status: 204 } : notFound),
     getUserCalendarHeatmapAdmin: ({ params }) => ({
       json: { from: params.$from ?? '', to: params.to ?? '', series: [], totalCount: 0 },
     }),
@@ -116,15 +143,33 @@ export const createHandlers = (data: MockData): Handlers => {
       const tag = data.getTag(params.id);
       return tag ? { json: tag } : notFound;
     },
-    getSearchSuggestions: () => ({ json: [] }),
+    upsertTags: ({ body }) => ({ json: data.upsertTags(body.tags) }),
+    updateTag: ({ params, body }) => {
+      const tag = data.updateTag(params.id, body);
+      return tag ? { json: tag } : notFound;
+    },
+    deleteTag: ({ params }) => (data.deleteTag(params.id) ? { status: 204 } : notFound),
+    bulkTagAssets: ({ body }) => ({ json: { count: data.tagAssets(body.assetIds, body.tagIds) } }),
+    untagAssets: ({ params, body }) => ({ json: data.untagAssets(params.id, body.ids) }),
+    getSearchSuggestions: ({ params }) => ({ json: data.searchSuggestions(params) as string[] }),
 
     updatePeople: ({ body }) => ({ json: data.updatePeople(body.people) }),
-    getFaces: () => ({ json: [] }),
-    createFace: () => ({ status: 201 }),
-    getAllPeople: () => {
-      const people = data.getPeople();
-      return { json: { hasNextPage: false, hidden: 0, people, total: people.length } };
+    searchPerson: ({ params }) => ({ json: data.searchPeople(params) }),
+    searchPlaces: ({ params }) => ({ json: data.searchPlaces(params.name) }),
+    getPerson: ({ params }) => {
+      const person = data.getPerson(params.id);
+      return person ? { json: person } : notFound;
     },
+    getPersonStatistics: ({ params }) => ({ json: data.personStatistics(params.id) }),
+    getClusterGroupUsers: ({ params }) => ({ json: data.clusterGroupUsers(params.id) }),
+    updatePerson: ({ params, body }) => {
+      const person = data.updatePerson(params.id, body);
+      return person ? { json: person } : notFound;
+    },
+    getFaces: ({ params }) => ({ json: data.getFaces(params.id) }),
+    deleteFace: ({ params }) => (data.deleteFace(params.id) ? { status: 204 } : notFound),
+    createFace: () => ({ status: 201 }),
+    getAllPeople: ({ params = {} }) => ({ json: data.peoplePage(params) }),
     getPersonThumbnail: ({ params }) => ({
       body: placeholderImage(undefined, params.id),
       contentType: 'image/svg+xml',
@@ -152,6 +197,8 @@ export const createHandlers = (data: MockData): Handlers => {
       data.deleteAlbum(params.id);
       return { status: 204 };
     },
+    removeUserFromAlbum: ({ params }) =>
+      data.removeUserFromAlbum(params.id, params.userId) ? { status: 204 } : notFound,
     getAlbumMapMarkers: ({ params }) => ({ json: data.mapMarkers(params.id) }),
     getMapMarkers: () => ({ json: data.mapMarkers() }),
     getAlbumInfo: ({ params }) => {
@@ -187,8 +234,12 @@ export const createHandlers = (data: MockData): Handlers => {
     },
 
     searchAssets: ({ body }) => ({ json: data.searchAssets(body) }),
+    searchSmart: ({ body }) => ({ json: data.searchAssets(body) }),
+    getExploreData: () => ({ json: data.exploreData() }),
+    getAssetsByCity: () => ({ json: data.assetsByCity() }),
 
     getAllSharedLinks: () => ({ json: data.sharedLinkList() }),
+    removeSharedLink: ({ params }) => (data.removeSharedLink(params.id) ? { status: 204 } : notFound),
     getMySharedLink: ({ params = {} }) => {
       const link = data.getSharedLink(params);
       if (!link) {
@@ -215,6 +266,7 @@ export const createHandlers = (data: MockData): Handlers => {
     }),
 
     searchWorkflows: () => ({ json: data.workflowList() }),
+    deleteWorkflow: ({ params }) => (data.deleteWorkflow(params.id) ? { status: 204 } : notFound),
     getWorkflowTriggers: () => ({
       json: Object.values(WorkflowTrigger).map((trigger) => ({ trigger, types: [WorkflowType.AssetV1] })),
     }),
