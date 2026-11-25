@@ -9,7 +9,7 @@ import {
   getRecentAlbumsQuery,
 } from '#lib/queries/album.query.ts';
 import { getApiKeysQuery } from '#lib/queries/api-key.query.ts';
-import { getAssetStatisticsQuery } from '#lib/queries/asset.query.ts';
+import { getAssetEditsQuery, getAssetOcrQuery, getAssetStatisticsQuery } from '#lib/queries/asset.query.ts';
 import { getAuthStatusQuery } from '#lib/queries/auth.query.ts';
 import {
   getClusterGroupRequestsForGroupQuery,
@@ -132,6 +132,8 @@ const queries: Record<string, QueryFactory> = {
   searchMemoriesQuery: () => searchMemoriesQuery({ isSaved: true }),
   memoriesStatisticsQuery: () => memoriesStatisticsQuery({ isSaved: true }),
   getAssetStatisticsQuery: () => getAssetStatisticsQuery({ isFavorite: true }),
+  getAssetOcrQuery: () => getAssetOcrQuery(id),
+  getAssetEditsQuery: () => getAssetEditsQuery(id),
   getAuthStatusQuery: () => getAuthStatusQuery(),
   getClusterGroupRequestsQuery: () => getClusterGroupRequestsQuery(),
   getClusterGroupRequestsForGroupQuery: () => getClusterGroupRequestsForGroupQuery(id),
